@@ -1,0 +1,244 @@
+---
+alwaysApply: true
+---
+
+# BrainVLA Development Rules
+
+## Project Overview
+BrainVLA is a three-expert Vision-Language-Action model based on π0 architecture with added affordance prediction capabilities. It implements a unified attention mechanism with precise blockwise routing.
+
+## Architecture Core Principles
+
+### 1. Three-Stage Expert Architecture
+- **Prefix (PaliGemma VLM)**: Processes vision and language inputs
+- **Middle (Affordance Expert)**: Predicts affordance maps using SAM or query-to-mask approaches  
+- **Suffix (Action Expert)**: Generates robot actions via flow matching
+
+### 2. Shared Attention Mechanism
+- All three experts share the same Transformer layers
+- Information flow controlled by precise blockwise attention masks
+- Sequence organization: `[VLM_tokens | Affordance_tokens | Action_tokens]`
+
+### 3. Attention Routing Rules
+```
+VLM ↔ VLM: Complete bidirectional attention
+Affordance → VLM: Can attend to VLM context
+Action → VLM: Can attend to VLM context  
+Affordance ↔ Affordance: Internal bidirectional attention
+Action ↔ Action: Internal bidirectional attention
+Action ↔ Affordance: Configurable cross-expert interaction
+```
+
+## Directory Structure
+
+### BrainVLA/models/
+- `configuration_brainvla.py`: Configuration classes
+- `modeling_brainvla.py`: Main BrainVLA policy implementation
+- `paligemma_with_triple_expert.py`: Three-expert shared attention model
+- `affordance_experts.py`: Affordance expert implementations (SAM-based, query-to-mask)
+- `attention_utils.py`: Blockwise attention mask construction utilities
+
+### BrainVLA/training/
+- `train_brainvla.py`: Training pipeline implementation
+- `loss_functions.py`: Multi-task loss computation
+- `data_utils.py`: Data loading and preprocessing
+
+### BrainVLA/testing/
+- `test_attention_masks.py`: Unit tests for attention mask construction
+- `test_affordance_experts.py`: Unit tests for affordance expert implementations
+- `test_integration.py`: Integration tests for full model
+- `test_lerobot_compatibility.py`: Tests for LeRobot interface compliance
+
+## Implementation Requirements
+
+### 1. LeRobot Interface Compliance
+All BrainVLA implementations MUST follow LeRobot's PreTrainedPolicy interface:
+
+```python
+class BrainVLAPolicy(PreTrainedPolicy):
+    config_class = BrainVLAConfig
+    name = "brainvla"
+    
+    # Required abstract methods:
+    def get_optim_params(self) -> dict
+    def reset(self)
+    def forward(self, batch: dict[str, Tensor]) -> tuple[Tensor, dict | None]
+    def predict_action_chunk(self, batch: dict[str, Tensor]) -> Tensor
+    def select_action(self, batch: dict[str, Tensor]) -> Tensor
+```
+
+### 2. Configuration Structure
+```python
+@dataclass
+class BrainVLAConfig(PreTrainedConfig):
+    # Expert interaction controls
+    affordance_expert_type: str = "sam"  # "sam" or "query_to_mask"
+    allow_action_see_affordance: bool = False
+    allow_affordance_see_action: bool = False
+    
+    # Affordance expert parameters
+    n_affordance_queries: int = 8
+    max_affordance_dim: int = 256
+    
+    # SAM configuration (when affordance_expert_type="sam")
+    sam_checkpoint_path: str = "sam_vit_h_4b8939.pth"
+    train_sam_mask_decoder: bool = True
+    freeze_sam_image_encoder: bool = True
+    
+    # Loss weights
+    affordance_focal_loss_weight: float = 0.1
+    affordance_dice_loss_weight: float = 1.0
+```
+
+### 3. Attention Mask Construction
+Use precise blockwise mask construction:
+```python
+def build_blockwise_mask(
+    vlm_len: int, 
+    affordance_len: int, 
+    action_len: int,
+    batch_size: int,
+    device: torch.device,
+    allow_action_see_affordance: bool = False,
+    allow_affordance_see_action: bool = False,
+) -> torch.Tensor:
+    # Explicit construction of 2D attention mask
+    # NOT using cumulative sum tricks
+```
+
+### 4. Flexible Affordance Expert Interface
+```python
+class AffordanceExpertInterface(ABC):
+    @abstractmethod
+    def get_affordance_embeddings(self, hidden_states: torch.Tensor, images: torch.Tensor) -> torch.Tensor
+    
+    @abstractmethod  
+    def compute_affordance_loss(self, hidden_states: torch.Tensor, images: torch.Tensor, gt_masks: torch.Tensor) -> dict
+```
+
+## Coding Standards
+
+### 1. Import Organization
+```python
+# Standard library
+import math
+from collections import deque
+from typing import List, Optional, Union
+
+# Third party
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from transformers import AutoTokenizer
+
+# LeRobot
+from lerobot.policies.pretrained import PreTrainedPolicy
+from lerobot.policies.normalize import Normalize, Unnormalize
+from lerobot.constants import ACTION, OBS_STATE
+
+# Local
+from .configuration_brainvla import BrainVLAConfig
+from .affordance_experts import AffordanceExpertInterface
+```
+
+### 2. Docstring Format
+```python
+def forward(self, batch: dict[str, Tensor]) -> tuple[Tensor, dict]:
+    """Forward pass for training with multi-task loss computation.
+    
+    Args:
+        batch: Dictionary containing:
+            - images: Visual observations
+            - task: Language instructions  
+            - state: Robot proprioceptive state
+            - action: Ground truth actions
+            - affordance_masks: Ground truth affordance masks (optional)
+    
+    Returns:
+        Tuple of (total_loss, loss_dict) where loss_dict contains:
+            - action_loss: Flow matching loss for actions
+            - affordance_focal_loss: Focal loss for affordance prediction
+            - affordance_dice_loss: Dice loss for affordance prediction
+    """
+```
+
+### 3. Configuration Validation
+All configs must implement validation:
+```python
+def __post_init__(self):
+    super().__post_init__()
+    if self.allow_action_see_affordance and not self.train_affordance_expert:
+        raise ValueError("Cannot allow action to see affordance if affordance expert is not trained")
+```
+
+### 4. Error Handling
+```python
+if affordance_expert_type not in ["sam", "query_to_mask"]:
+    raise ValueError(f"Unknown affordance_expert_type: {affordance_expert_type}")
+```
+
+## Testing Requirements
+
+### 1. Unit Tests
+- Test attention mask construction with various configurations
+- Test affordance expert implementations independently  
+- Test configuration validation
+- Test tensor shapes through forward passes
+
+### 2. Integration Tests
+- Test full model forward pass
+- Test training/inference mode switching
+- Test multi-task loss computation
+- Test LeRobot factory integration
+
+### 3. Compatibility Tests
+- Verify PreTrainedPolicy interface compliance
+- Test save/load functionality
+- Test HuggingFace Hub integration
+
+## Documentation Requirements
+
+### 1. Code Comments
+- Explain attention routing logic clearly
+- Document tensor shape transformations
+- Clarify expert interaction configurations
+
+### 2. README.md
+- Architecture overview with diagrams
+- Usage examples
+- Configuration options
+- Training instructions
+
+### 3. Type Hints
+All functions must have complete type hints:
+```python
+def embed_affordance_queries(
+    self, 
+    batch_size: int, 
+    device: torch.device,
+    affordance_context: Optional[torch.Tensor] = None
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+```
+
+## Performance Considerations
+
+### 1. Memory Optimization
+- Use gradient checkpointing for large models
+- Implement KV cache for inference
+- Optimize attention computation for large sequences
+
+### 2. Training Efficiency  
+- Support mixed precision training
+- Implement efficient data loading
+- Use appropriate loss scaling
+
+### 3. Inference Speed
+- Implement prefix caching for repeated contexts
+- Optimize mask construction
+- Support batched inference
+
+## File References
+- Base implementation: [modeling_pi0.py](mdc:Dual-System/lerobot-main/src/lerobot/policies/pi0/modeling_pi0.py)
+- Configuration reference: [configuration_pi0.py](mdc:Dual-System/lerobot-main/src/lerobot/policies/pi0/configuration_pi0.py)
+- Attention implementation: [paligemma_with_expert.py](mdc:Dual-System/brianVLA-attentionBased/src/hume/models/paligemma_with_expert.py)
+- SAM integration: [GLOVER_plus.py](mdc:Dual-System/Affordance_Modules/GLOVER-main/model/GLOVER_plus.py)

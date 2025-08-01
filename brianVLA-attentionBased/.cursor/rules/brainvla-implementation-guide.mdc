@@ -1,0 +1,231 @@
+---
+globs: BrainVLA/**/*.py
+---
+
+# BrainVLA Implementation Guide
+
+## Critical Implementation Rules
+
+### 1. Always inherit from LeRobot's base classes
+- Policies MUST inherit from `PreTrainedPolicy`
+- Configs MUST inherit from `PreTrainedConfig` and be decorated with `@PreTrainedConfig.register_subclass`
+- Use LeRobot's normalization utilities: `Normalize`, `Unnormalize`
+
+### 2. Required Policy Interface Methods
+Every policy must implement these abstract methods:
+```python
+def get_optim_params(self) -> dict:
+    """Return parameters for optimizer"""
+    return self.parameters()
+
+def reset(self):
+    """Reset internal state (e.g., action queues, caches)"""
+    
+def forward(self, batch: dict[str, Tensor]) -> tuple[Tensor, dict]:
+    """Training forward pass returning (loss, loss_dict)"""
+    
+def predict_action_chunk(self, batch: dict[str, Tensor]) -> Tensor:
+    """Predict action chunk for evaluation"""
+    
+def select_action(self, batch: dict[str, Tensor]) -> Tensor:
+    """Select single action for environment execution"""
+```
+
+### 3. Configuration Class Pattern
+```python
+@PreTrainedConfig.register_subclass("brainvla")
+@dataclass  
+class BrainVLAConfig(PreTrainedConfig):
+    # Always include these LeRobot standard fields
+    n_obs_steps: int = 1
+    chunk_size: int = 50
+    n_action_steps: int = 50
+    
+    # Input/output features (will be set by dataset)
+    input_features: dict[str, FeatureInfo] = field(default_factory=dict)
+    output_features: dict[str, FeatureInfo] = field(default_factory=dict)
+    
+    # Normalization mapping  
+    normalization_mapping: dict[str, NormalizationMode] = field(
+        default_factory=lambda: {
+            "VISUAL": NormalizationMode.IDENTITY,
+            "STATE": NormalizationMode.MEAN_STD, 
+            "ACTION": NormalizationMode.MEAN_STD,
+        }
+    )
+    
+    def __post_init__(self):
+        super().__post_init__()
+        # Add validation logic here
+```
+
+### 4. Attention Mask Construction - NO cumsum tricks
+Use explicit block-based construction:
+```python
+def build_blockwise_mask(vlm_len, affordance_len, action_len, batch_size, device, **kwargs):
+    total_len = vlm_len + affordance_len + action_len
+    mask = torch.zeros(batch_size, total_len, total_len, dtype=torch.bool, device=device)
+    
+    # Explicitly set each block relationship
+    # VLM ↔ VLM
+    mask[:, :vlm_len, :vlm_len] = True
+    
+    # Affordance → VLM  
+    mask[:, vlm_len:vlm_len+affordance_len, :vlm_len] = True
+    
+    # Action → VLM
+    mask[:, vlm_len+affordance_len:, :vlm_len] = True
+    
+    # Affordance ↔ Affordance
+    mask[:, vlm_len:vlm_len+affordance_len, vlm_len:vlm_len+affordance_len] = True
+    
+    # Action ↔ Action  
+    mask[:, vlm_len+affordance_len:, vlm_len+affordance_len:] = True
+    
+    # Configurable cross-expert attention
+    if kwargs.get('allow_action_see_affordance', False):
+        mask[:, vlm_len+affordance_len:, vlm_len:vlm_len+affordance_len] = True
+        
+    if kwargs.get('allow_affordance_see_action', False):
+        mask[:, vlm_len:vlm_len+affordance_len, vlm_len+affordance_len:] = True
+    
+    return mask
+```
+
+### 5. Shared Transformer Implementation Pattern
+```python
+def forward(self, inputs_embeds: List[torch.Tensor], attention_mask, **kwargs):
+    """
+    inputs_embeds: [prefix_embs, middle_embs, suffix_embs] 
+    Each can be None to skip that expert
+    """
+    models = [self.vlm_model, self.affordance_model, self.action_model]
+    
+    for layer_idx in range(num_layers):
+        query_states, key_states, value_states = [], [], []
+        
+        # Compute Q,K,V for each active expert
+        for i, hidden_states in enumerate(inputs_embeds):
+            if hidden_states is None:
+                continue
+            layer = models[i].layers[layer_idx] 
+            # ... Q,K,V computation
+        
+        # Concatenate in sequence dimension for shared attention
+        query_states = torch.cat(query_states, dim=1)
+        key_states = torch.cat(key_states, dim=1) 
+        value_states = torch.cat(value_states, dim=1)
+        
+        # Apply shared attention with blockwise mask
+        att_output = self.attention_fn(query_states, key_states, value_states, attention_mask)
+        
+        # Split back to experts and apply residual + MLP
+        # ...
+```
+
+### 6. Affordance Expert Interface Enforcement
+ALWAYS implement the abstract interface:
+```python
+class AffordanceExpertInterface(ABC):
+    @abstractmethod
+    def get_affordance_embeddings(self, hidden_states: torch.Tensor, images: torch.Tensor) -> torch.Tensor:
+        pass
+    
+    @abstractmethod
+    def compute_affordance_loss(self, hidden_states: torch.Tensor, images: torch.Tensor, gt_masks: torch.Tensor) -> dict:
+        pass
+```
+
+### 7. Loss Computation Pattern
+```python
+def forward(self, batch):
+    # ... model forward pass
+    
+    loss_dict = {}
+    total_loss = 0
+    
+    # Action loss (flow matching)
+    action_loss = F.mse_loss(pred_velocity, target_velocity, reduction="none").mean()
+    loss_dict["action_loss"] = action_loss.item()
+    total_loss += action_loss
+    
+    # Affordance loss (if ground truth available)
+    if "affordance_masks" in batch:
+        affordance_losses = self.affordance_expert.compute_affordance_loss(...)
+        for name, loss in affordance_losses.items():
+            loss_dict[f"affordance_{name}"] = loss.item()
+            total_loss += loss * self.config.get(f"affordance_{name}_weight", 1.0)
+    
+    return total_loss, loss_dict
+```
+
+### 8. Testing Pattern for Each File
+Every implementation file should have corresponding test:
+```python
+# In BrainVLA/testing/test_[module_name].py
+import pytest
+import torch
+from BrainVLA.models.[module_name] import [ClassName]
+
+class Test[ClassName]:
+    def test_forward_pass_shapes(self):
+        # Test tensor shapes through forward pass
+        
+    def test_configuration_validation(self):
+        # Test config validation logic
+        
+    def test_lerobot_interface_compliance(self):
+        # Test LeRobot interface requirements
+```
+
+### 9. Type Hints Requirements
+ALL functions must have complete type hints:
+```python
+def embed_affordance_queries(
+    self,
+    batch_size: int,
+    device: torch.device, 
+    affordance_context: Optional[torch.Tensor] = None
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Always include docstring with Args and Returns sections"""
+```
+
+### 10. Factory Integration
+To integrate with LeRobot, add to factory pattern:
+```python
+# This will be needed in lerobot.policies.factory.py eventually
+elif name == "brainvla":
+    from BrainVLA.models.modeling_brainvla import BrainVLAPolicy
+    return BrainVLAPolicy
+```
+
+## File Organization Rules
+
+### BrainVLA/models/
+- `configuration_brainvla.py`: Single config class with all parameters
+- `modeling_brainvla.py`: Main policy class inheriting PreTrainedPolicy  
+- `paligemma_with_triple_expert.py`: Shared transformer implementation
+- `affordance_experts.py`: SAM and query-to-mask implementations
+- `attention_utils.py`: Blockwise mask construction utilities
+
+### BrainVLA/training/  
+- `train_brainvla.py`: Training script compatible with LeRobot training framework
+- `loss_functions.py`: Multi-task loss implementations (focal, dice, flow matching)
+- `data_utils.py`: Data loading and preprocessing utilities
+
+### BrainVLA/testing/
+- Test files matching the module structure
+- Integration tests for LeRobot compatibility
+- Performance benchmarks
+
+## Error Handling Requirements
+- Always validate tensor shapes at function entry
+- Check device compatibility between tensors
+- Validate configuration parameters in `__post_init__`
+- Use descriptive error messages with context
+
+## Memory Management  
+- Use `torch.no_grad()` for inference-only computations
+- Implement gradient checkpointing for large models
+- Clear unnecessary intermediate tensors
+- Support mixed precision training with `autocast`

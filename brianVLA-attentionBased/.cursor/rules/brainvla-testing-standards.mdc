@@ -1,0 +1,335 @@
+---
+globs: BrainVLA/testing/**/*.py,BrainVLA/**/*test*.py
+---
+
+# BrainVLA Testing Standards
+
+## Testing Philosophy
+Every component must be thoroughly tested to ensure reliability and LeRobot compatibility. Tests should cover unit functionality, integration scenarios, and edge cases.
+
+## Required Test Categories
+
+### 1. Unit Tests (per module)
+Each module in BrainVLA/models/ requires corresponding tests:
+
+#### Configuration Tests
+```python
+# test_configuration_brainvla.py
+def test_config_validation():
+    """Test configuration parameter validation"""
+    # Valid config
+    config = BrainVLAConfig(
+        affordance_expert_type="sam",
+        allow_action_see_affordance=False
+    )
+    assert config.affordance_expert_type == "sam"
+    
+    # Invalid config should raise
+    with pytest.raises(ValueError):
+        BrainVLAConfig(affordance_expert_type="invalid_type")
+
+def test_config_post_init_validation():
+    """Test __post_init__ validation logic"""
+    with pytest.raises(ValueError, match="Cannot allow action to see affordance"):
+        BrainVLAConfig(
+            allow_action_see_affordance=True,
+            train_affordance_expert=False
+        )
+```
+
+#### Attention Mask Tests  
+```python
+# test_attention_utils.py
+def test_blockwise_mask_construction():
+    """Test precise blockwise attention mask construction"""
+    batch_size, device = 2, torch.device("cpu")
+    vlm_len, aff_len, act_len = 10, 5, 8
+    
+    # Test default case (no cross-expert attention)
+    mask = build_blockwise_mask(vlm_len, aff_len, act_len, batch_size, device)
+    
+    # Verify shapes
+    assert mask.shape == (batch_size, vlm_len + aff_len + act_len, vlm_len + aff_len + act_len)
+    
+    # Verify VLM ↔ VLM bidirectional
+    assert mask[:, :vlm_len, :vlm_len].all()
+    
+    # Verify Affordance → VLM (but not VLM → Affordance)
+    assert mask[:, vlm_len:vlm_len+aff_len, :vlm_len].all()
+    assert not mask[:, :vlm_len, vlm_len:vlm_len+aff_len].any()
+    
+    # Test configurable cross-expert attention
+    mask_with_cross = build_blockwise_mask(
+        vlm_len, aff_len, act_len, batch_size, device,
+        allow_action_see_affordance=True,
+        allow_affordance_see_action=True
+    )
+    
+    # Verify cross-expert attention is enabled
+    assert mask_with_cross[:, vlm_len+aff_len:, vlm_len:vlm_len+aff_len].all()
+    assert mask_with_cross[:, vlm_len:vlm_len+aff_len, vlm_len+aff_len:].all()
+
+def test_mask_device_consistency():
+    """Test attention mask device placement"""
+    for device in [torch.device("cpu"), torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")]:
+        mask = build_blockwise_mask(5, 3, 4, 2, device)
+        assert mask.device == device
+```
+
+#### Affordance Expert Tests
+```python
+# test_affordance_experts.py  
+def test_sam_affordance_expert():
+    """Test SAM-based affordance expert"""
+    config = BrainVLAConfig(affordance_expert_type="sam")
+    expert = SAMAffordanceExpert(config)
+    
+    batch_size, n_queries, hidden_dim = 2, 4, 512
+    hidden_states = torch.randn(batch_size, n_queries, hidden_dim)
+    images = torch.randn(batch_size, 3, 224, 224)
+    
+    # Test forward pass
+    pred_masks = expert.get_affordance_embeddings(hidden_states, images)
+    assert len(pred_masks) == batch_size
+    
+    # Test loss computation with dummy ground truth
+    gt_masks = [torch.randint(0, 2, (n_queries, 224, 224)).float() for _ in range(batch_size)]
+    losses = expert.compute_affordance_loss(hidden_states, images, gt_masks)
+    
+    assert "focal_loss" in losses
+    assert "dice_loss" in losses
+    assert all(isinstance(v, torch.Tensor) for v in losses.values())
+
+def test_query_to_mask_expert():
+    """Test query-to-mask affordance expert"""
+    config = BrainVLAConfig(affordance_expert_type="query_to_mask", image_size=224)
+    expert = QueryToMaskAffordanceExpert(config)
+    
+    batch_size, n_queries, hidden_dim = 2, 4, 512
+    hidden_states = torch.randn(batch_size, n_queries, hidden_dim)
+    images = torch.randn(batch_size, 3, 224, 224)
+    
+    pred_masks = expert.get_affordance_embeddings(hidden_states, images)
+    assert pred_masks.shape == (batch_size, n_queries, 224, 224)
+
+def test_affordance_expert_interface_compliance():
+    """Ensure all affordance experts implement the interface"""
+    from BrainVLA.models.affordance_experts import AffordanceExpertInterface
+    
+    config = BrainVLAConfig()
+    
+    # Test SAM expert
+    sam_expert = SAMAffordanceExpert(config)
+    assert isinstance(sam_expert, AffordanceExpertInterface)
+    
+    # Test query-to-mask expert  
+    q2m_expert = QueryToMaskAffordanceExpert(config)
+    assert isinstance(q2m_expert, AffordanceExpertInterface)
+```
+
+### 2. Integration Tests
+```python
+# test_integration.py
+def test_full_model_forward_pass():
+    """Test complete BrainVLA model forward pass"""
+    config = BrainVLAConfig(
+        n_obs_steps=1,
+        chunk_size=10,
+        n_action_steps=10,
+        affordance_expert_type="sam"
+    )
+    
+    # Create dummy dataset stats for normalization
+    dataset_stats = {
+        "action": {"mean": torch.zeros(7), "std": torch.ones(7)},
+        "observation.state": {"mean": torch.zeros(14), "std": torch.ones(14)}
+    }
+    
+    policy = BrainVLAPolicy(config, dataset_stats)
+    
+    # Create dummy batch
+    batch = {
+        "observation.images.top": torch.randn(2, 3, 224, 224),
+        "observation.state": torch.randn(2, 14),
+        "action": torch.randn(2, 10, 7), 
+        "task": ["pick up the cup", "place the object"],
+        "affordance_masks": [torch.randint(0, 2, (4, 224, 224)).float() for _ in range(2)]
+    }
+    
+    # Test training forward pass
+    policy.train()
+    loss, loss_dict = policy.forward(batch)
+    
+    assert isinstance(loss, torch.Tensor)
+    assert loss.requires_grad
+    assert "action_loss" in loss_dict
+    assert "affordance_focal_loss" in loss_dict or "affordance_dice_loss" in loss_dict
+    
+    # Test inference
+    policy.eval()
+    with torch.no_grad():
+        action = policy.select_action(batch)
+        assert action.shape[-1] == 7  # action_dim
+
+def test_configurable_expert_interaction():
+    """Test different expert interaction configurations"""
+    base_config = BrainVLAConfig(n_action_steps=5, affordance_expert_type="query_to_mask")
+    
+    configs = [
+        # No interaction
+        base_config,
+        # Action sees affordance
+        dataclasses.replace(base_config, allow_action_see_affordance=True),
+        # Bidirectional interaction  
+        dataclasses.replace(base_config, allow_action_see_affordance=True, allow_affordance_see_action=True)
+    ]
+    
+    for config in configs:
+        policy = BrainVLAPolicy(config)
+        # Test that different configurations don't break forward pass
+        # ... test logic
+```
+
+### 3. LeRobot Compatibility Tests
+```python
+# test_lerobot_compatibility.py
+def test_pretrained_policy_interface():
+    """Verify BrainVLAPolicy implements PreTrainedPolicy interface"""
+    from lerobot.policies.pretrained import PreTrainedPolicy
+    
+    config = BrainVLAConfig()
+    policy = BrainVLAPolicy(config)
+    
+    assert isinstance(policy, PreTrainedPolicy)
+    assert hasattr(policy, 'get_optim_params')
+    assert hasattr(policy, 'reset')
+    assert hasattr(policy, 'forward')
+    assert hasattr(policy, 'predict_action_chunk')
+    assert hasattr(policy, 'select_action')
+
+def test_config_registration():
+    """Test configuration registration with LeRobot"""
+    from lerobot.configs.policies import PreTrainedConfig
+    
+    # Verify config is properly registered
+    config = BrainVLAConfig()
+    assert isinstance(config, PreTrainedConfig)
+    assert config.model_type == "brainvla"
+
+def test_factory_integration():
+    """Test integration with LeRobot policy factory"""
+    # This will be needed when integrating with LeRobot
+    # from lerobot.policies.factory import get_policy_class
+    # policy_class = get_policy_class("brainvla")
+    # assert policy_class == BrainVLAPolicy
+    pass
+
+def test_normalization_compatibility():
+    """Test compatibility with LeRobot's normalization system"""
+    from lerobot.policies.normalize import Normalize, Unnormalize
+    
+    config = BrainVLAConfig()
+    dummy_stats = {
+        "action": {"mean": torch.zeros(7), "std": torch.ones(7)},
+        "observation.state": {"mean": torch.zeros(14), "std": torch.ones(14)}
+    }
+    
+    # Test normalization initialization
+    normalize_inputs = Normalize(config.input_features, config.normalization_mapping, dummy_stats)
+    unnormalize_outputs = Unnormalize(config.output_features, config.normalization_mapping, dummy_stats)
+    
+    # Should not raise errors
+    assert normalize_inputs is not None
+    assert unnormalize_outputs is not None
+```
+
+### 4. Performance and Memory Tests
+```python
+# test_performance.py
+def test_memory_usage():
+    """Test memory efficiency of shared attention"""
+    import psutil
+    import os
+    
+    config = BrainVLAConfig(n_action_steps=50)
+    policy = BrainVLAPolicy(config)
+    
+    # Measure memory before and after forward pass
+    process = psutil.Process(os.getpid())
+    initial_memory = process.memory_info().rss
+    
+    batch = create_dummy_batch(batch_size=4)
+    loss, _ = policy.forward(batch)
+    loss.backward()
+    
+    final_memory = process.memory_info().rss
+    memory_increase = (final_memory - initial_memory) / 1024 / 1024  # MB
+    
+    # Should not exceed reasonable memory usage (adjust threshold as needed)
+    assert memory_increase < 1000  # Less than 1GB increase
+
+@pytest.mark.parametrize("batch_size", [1, 2, 4, 8])
+def test_batching_consistency(batch_size):
+    """Test output consistency across different batch sizes"""
+    config = BrainVLAConfig(deterministic=True)  # If available
+    policy = BrainVLAPolicy(config)
+    
+    # Create batches of different sizes with same content
+    single_batch = create_dummy_batch(batch_size=1)
+    multi_batch = create_dummy_batch(batch_size=batch_size)
+    
+    # Results should be consistent (within numerical precision)
+    with torch.no_grad():
+        single_results = [policy.select_action(single_batch) for _ in range(batch_size)]
+        multi_results = policy.select_action(multi_batch)
+    
+    for i, single_result in enumerate(single_results):
+        torch.testing.assert_close(single_result, multi_results[i], rtol=1e-5, atol=1e-5)
+```
+
+## Test Utilities and Fixtures
+```python
+# conftest.py
+import pytest
+import torch
+from BrainVLA.models.configuration_brainvla import BrainVLAConfig
+
+@pytest.fixture
+def default_config():
+    return BrainVLAConfig(
+        n_obs_steps=1,
+        chunk_size=10,
+        n_action_steps=10,
+        affordance_expert_type="query_to_mask"
+    )
+
+@pytest.fixture  
+def dummy_dataset_stats():
+    return {
+        "action": {"mean": torch.zeros(7), "std": torch.ones(7)},
+        "observation.state": {"mean": torch.zeros(14), "std": torch.ones(14)}
+    }
+
+def create_dummy_batch(batch_size=2):
+    return {
+        "observation.images.top": torch.randn(batch_size, 3, 224, 224),
+        "observation.state": torch.randn(batch_size, 14),
+        "action": torch.randn(batch_size, 10, 7),
+        "task": [f"task_{i}" for i in range(batch_size)],
+        "affordance_masks": [torch.randint(0, 2, (4, 224, 224)).float() for _ in range(batch_size)]
+    }
+```
+
+## Test Execution Requirements
+- All tests must pass before code commits
+- Use `pytest -v` for verbose test output
+- Include performance benchmarks for critical paths  
+- Test both CPU and GPU execution when available
+- Verify deterministic behavior where possible
+- Test edge cases (empty batches, single samples, etc.)
+
+## Coverage Requirements
+- Minimum 90% code coverage for core model components
+- 100% coverage for configuration validation
+- All public interface methods must be tested
+- Test both success and failure scenarios
