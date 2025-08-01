@@ -1,0 +1,11 @@
+CUDA_VISIBLE_DEVICES=0 python infer.py \
+    --version="/path/to/GLOVER++ model" \
+    --vision-tower="/path/to/clip-vit-large-patch14" \
+    --model_arch="glover++" \
+    --vis_save_path="./vis_output" \
+    --vis_argmax_save_path="./vis_argmax_output" \
+    --image_path="images/%s.png" \
+    --objects="" \
+    --actions="" \
+    --prompt="Where should I interact with the %s to %s it? Please output segmentation mask." \
+    --use_text_emb_in_suffix_sam

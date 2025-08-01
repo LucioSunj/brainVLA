@@ -1,0 +1,18 @@
+deepspeed --include localhost:1 --master_port=23914 train_glover_plus.py \
+  --version="/path/to/LISA_Plus_7b" \
+  --vision-tower="/path/to/clip-vit-large-patch14" \
+  --sam_vit_path="/path/to/sam_vit_h_4b8939.pth" \
+  --dataset_dir='/path/to/HOVA-500K/datasets' \
+  --dataset="3doi||ego4d||epic100||handal" \
+  --sample_rates="1,1,1,1" \
+  --exp_name="glover++" \
+  --lr=0.0005 \
+  --epochs=10 \
+  --batch_size=32 \
+  --steps_per_epoch=196 \
+  --ce_loss_weight=0.0 \
+  --use_text_emb_in_suffix_sam \
+  --kl_loss_weight=0.1 \
+  --train_firs_mask_decoder \
+  --use_diff_lr \
+  --lr_ratio=0.1

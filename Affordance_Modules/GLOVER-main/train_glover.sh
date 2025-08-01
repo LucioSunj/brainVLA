@@ -1,0 +1,12 @@
+deepspeed --include localhost:2 --master_port=20983 train_glover.py \
+  --version="/path/to/LISA_Plus_7b" \
+  --vision-tower="/path/to/clip-vit-large-patch14" \
+  --dataset_dir='/path/to/HOVA-500K/datasets' \
+  --dataset="3doi||ego4d||epic100||handal" \
+  --sample_rates="1,1,1,1" \
+  --exp_name="glover" \
+  --lr=0.0005 \
+  --epochs=5 \
+  --batch_size=32 \
+  --steps_per_epoch=196 \
+  --ce_loss_weight=0.01
