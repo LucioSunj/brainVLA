@@ -1,0 +1,3 @@
+# brianVLA-Module Affordance Implementation
+
+- 这个模型的实现我现在想要将SAM作为模块插入，替换image_encoder为paligemma，然后直接利用paligemma的encoded features放入SAM中用于预测Affordance
