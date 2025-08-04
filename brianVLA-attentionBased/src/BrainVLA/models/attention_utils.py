@@ -279,7 +279,7 @@ def visualize_attention_mask(
         else:
             row_label = "C"
         
-        row = f"{row_label:2d} "
+        row = f"{row_label}{i:2d} "
         for j in range(mask_2d.shape[1]):
             row += "1" if mask_2d[i, j] else "0"
         lines.append(row)
