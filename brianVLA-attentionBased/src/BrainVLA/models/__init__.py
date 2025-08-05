@@ -14,6 +14,22 @@ from .attention_utils import (
     create_action_to_affordance_mask,
     create_bidirectional_experts_mask,
 )
+from .affordance_experts import (
+    AffordanceExpertInterface,
+    SAMAffordanceExpert,
+    DirectAffordanceExpert,
+    create_affordance_expert,
+    validate_affordance_expert,
+    get_affordance_expert_info,
+)
+from .paligemma_with_triple_expert import (
+    BrainVLAWithTripleExpertConfig,
+    BrainVLAWithTripleExpertModel,
+)
+from .modeling_brainvla import (
+    BrainVLAPolicy,
+    BrainVLAFlowMatching,
+)
 
 __all__ = [
     # Hume models
@@ -35,4 +51,17 @@ __all__ = [
     "create_isolated_experts_mask",
     "create_action_to_affordance_mask",
     "create_bidirectional_experts_mask",
+    # BrainVLA affordance experts
+    "AffordanceExpertInterface",
+    "SAMAffordanceExpert", 
+    "DirectAffordanceExpert",
+    "create_affordance_expert",
+    "validate_affordance_expert",
+    "get_affordance_expert_info",
+    # BrainVLA triple expert model
+    "BrainVLAWithTripleExpertConfig",
+    "BrainVLAWithTripleExpertModel",
+    # BrainVLA main policy
+    "BrainVLAPolicy",
+    "BrainVLAFlowMatching",
 ]

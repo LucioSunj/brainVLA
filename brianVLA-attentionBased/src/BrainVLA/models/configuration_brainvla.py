@@ -163,7 +163,8 @@ class BrainVLAConfig(PreTrainedConfig):
     
     # ===== Expert Model Configurations =====
     
-    paligemma_config: Dict = field(
+    # VLM Expert (PaliGemma) Configuration
+    vlm_config: Dict = field(
         default_factory=lambda: {
             "bos_token_id": 2,
             "eos_token_id": 1,
@@ -177,7 +178,7 @@ class BrainVLAConfig(PreTrainedConfig):
                 "hidden_size": 2048,
                 "intermediate_size": 16384,
                 "model_type": "gemma",
-                "num_attention_heads": 8,
+                "num_attention_heads": 16,  # Higher for VLM
                 "num_hidden_layers": 18,
                 "num_image_tokens": 256,
                 "num_key_value_heads": 1,
@@ -200,6 +201,7 @@ class BrainVLAConfig(PreTrainedConfig):
         }
     )
     
+    # Affordance Expert Configuration (Medium-sized, specialized for spatial reasoning)
     affordance_expert_config: Dict = field(
         default_factory=lambda: {
             "attention_bias": False,
@@ -209,13 +211,13 @@ class BrainVLAConfig(PreTrainedConfig):
             "head_dim": 128,
             "hidden_act": "gelu_pytorch_tanh",
             "hidden_activation": "gelu_pytorch_tanh",
-            "hidden_size": 512,  # Smaller than action expert
+            "hidden_size": 512,  # Medium size for affordance reasoning
             "initializer_range": 0.02,
             "intermediate_size": 2048,
             "max_position_embeddings": 8192,
             "model_type": "gemma",
             "num_attention_heads": 8,
-            "num_hidden_layers": 12,  # Fewer layers than action expert
+            "num_hidden_layers": 18,  # Full depth for affordance understanding
             "num_key_value_heads": 1,
             "pad_token_id": 0,
             "rms_norm_eps": 1e-06,
@@ -226,6 +228,7 @@ class BrainVLAConfig(PreTrainedConfig):
         }
     )
     
+    # Action Expert Configuration (Full-sized, specialized for action generation)
     action_expert_config: Dict = field(
         default_factory=lambda: {
             "attention_bias": False,
@@ -235,7 +238,7 @@ class BrainVLAConfig(PreTrainedConfig):
             "head_dim": 256,
             "hidden_act": "gelu_pytorch_tanh",
             "hidden_activation": "gelu_pytorch_tanh",
-            "hidden_size": 1024,
+            "hidden_size": 1024,  # Full size for action generation
             "initializer_range": 0.02,
             "intermediate_size": 4096,
             "max_position_embeddings": 8192,
@@ -251,6 +254,10 @@ class BrainVLAConfig(PreTrainedConfig):
             "vocab_size": 257152,
         }
     )
+    
+    # Expert Training Configuration
+    train_affordance_expert: bool = True
+    train_action_expert: bool = True
     
     # ===== Experimental Features =====
     
